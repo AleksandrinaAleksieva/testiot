@@ -1,4 +1,4 @@
-# Xray Studio — Backend Proxy
+# IoT Studio — Backend Proxy
 
 Solves the CORS problem: instead of the browser calling Atlassian directly,
 the proxy server holds your API credentials and makes all Jira calls server-side.
@@ -20,7 +20,7 @@ Atlassian REST API
 ### 1. Install dependencies
 
 ```bash
-cd xray-proxy
+cd IoT-proxy
 npm install
 ```
 
@@ -50,7 +50,7 @@ npm start
 You should see:
 ```
 ╔══════════════════════════════════════════════╗
-║         Xray Studio — Proxy Server           ║
+║         IoT Studio — Proxy Server           ║
 ╠══════════════════════════════════════════════╣
 ║  Listening on  http://localhost:3001         ║
 ║  Jira domain   shellyusa.atlassian.net       ║
@@ -59,7 +59,7 @@ You should see:
 
 ### 4. Open the portal
 
-Copy `xray-studio.jsx` into your React project (Vite, CRA, etc.) and run it.
+Copy `IoT-studio.jsx` into your React project (Vite, CRA, etc.) and run it.
 The portal will connect to the proxy at `http://localhost:3001`.
 
 ---
@@ -115,7 +115,7 @@ can use it without needing their own API token:
 | **Cloudflare Workers**  | Free   | ⭐⭐⭐ Requires rewriting to Workers API (no Node.js) |
 
 For Railway/Render, set the `ALLOWED_ORIGINS` env var to your hosted portal URL,
-e.g. `https://xray-studio.yourcompany.com`.
+e.g. `https://IoT-studio.yourcompany.com`.
 
 ---
 
@@ -135,8 +135,8 @@ e.g. `https://xray-studio.yourcompany.com`.
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `Cannot reach proxy` | Proxy not running | `npm start` in `xray-proxy/` |
+| `Cannot reach proxy` | Proxy not running | `npm start` in `IoT-proxy/` |
 | `CORS: origin not allowed` | Frontend URL not in `ALLOWED_ORIGINS` | Add it to `.env` |
 | `Auth failed` | Wrong email/token | Check `.env`, regenerate token |
 | `Failed to create execution: HTTP 400` | Issue type name wrong | Verify "Test Execution" exists in QAT project |
-| `parent: Field cannot be set` | "Test" type doesn't support `parent` | Use `subtask` type or check Xray config |
+| `parent: Field cannot be set` | "Test" type doesn't support `parent` | Use `subtask` type or check IoT config |
