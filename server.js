@@ -44,7 +44,6 @@ app.use(express.json());
 const origins = ALLOWED_ORIGINS.split(",").map(o => o.trim());
 app.use(cors({
   origin: (origin, cb) => {
-    // Allow requests with no origin (curl, Postman, server-to-server)
     if (!origin || origins.includes(origin)) return cb(null, true);
     cb(new Error(`CORS: origin '${origin}' not allowed`));
   },
