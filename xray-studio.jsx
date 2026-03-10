@@ -332,7 +332,7 @@ export default function App() {
 
       <nav className="nav">
         <div className="bmark">⚡</div>
-        <span className="bname">XRAY STUDIO</span>
+        <span className="bname">IoT STUDIO</span>
         <div className="nsep"/>
         {[
           {id:"select",   icon:"☑", label:"SELECT TESTS"},
