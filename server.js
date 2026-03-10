@@ -1,5 +1,5 @@
 /**
- * Xray Studio — Backend Proxy Server
+ * IoT Studio — Backend Proxy Server
  *
  * Sits between the React portal and Atlassian's REST API.
  * Holds credentials server-side so the browser never has them,
@@ -236,7 +236,7 @@ app.use((err, _req, res, _next) => {
 app.listen(PORT, () => {
   console.log(`
 ╔══════════════════════════════════════════════╗
-║         Xray Studio — Proxy Server           ║
+║         IoT Studio — Proxy Server           ║
 ╠══════════════════════════════════════════════╣
 ║  Listening on  http://localhost:${PORT}          ║
 ║  Jira domain   ${JIRA_DOMAIN.padEnd(30)} ║
