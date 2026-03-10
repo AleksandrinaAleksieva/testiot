@@ -42,14 +42,16 @@ const app = express();
 app.use(express.json());
 
 const origins = ALLOWED_ORIGINS.split(",").map(o => o.trim());
-app.use(cors({
+const corsOptions = {
   origin: (origin, cb) => {
-    if (!origin || origins.includes(origin)) return cb(null, true);
+    if (!origin || origins.includes("*") || origins.includes(origin)) return cb(null, true);
     cb(new Error(`CORS: origin '${origin}' not allowed`));
   },
   methods: ["GET", "POST", "OPTIONS"],
   allowedHeaders: ["Content-Type"],
-}));
+};
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 
 // ── Atlassian helper ──────────────────────────────────────────────────────────
 async function jira(path, method = "GET", body = null) {
