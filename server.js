@@ -1,5 +1,5 @@
 /**
- * IoT Studio — Backend Proxy Server
+ * Xray Studio — Backend Proxy Server
  *
  * Credentials come from the frontend per-request via headers:
  *   x-jira-email: user@company.com
@@ -133,12 +133,29 @@ app.post("/api/execution", async (req, res) => {
 
   for (const t of tests) {
     try {
+      // Build description from status + comment if provided
+      const statusLabel = {
+        passed:          "✅ PASSED",
+        passed_remarks:  "✅ PASSED with remarks",
+        failed:          "❌ FAILED",
+        fixed:           "🔧 FIXED",
+        skipped:         "⏭ SKIPPED",
+        not_applicable:  "N/A",
+      }[t.status] || "N/A";
+      const descText = t.comment
+        ? `${statusLabel}\n\n${t.comment}`
+        : statusLabel;
+
       const issue = await jira("/issue", "POST", {
         fields: {
           project:   { key: projectKey },
           issuetype: { name: "Test" },
           summary:   t.summary,
           parent:    { key: execKey },
+          description: {
+            type: "doc", version: 1,
+            content: [{ type: "paragraph", content: [{ type: "text", text: descText }] }],
+          },
         },
       }, auth);
       created.push({ original: t.key, created: issue.key });
@@ -161,6 +178,88 @@ app.post("/api/execution", async (req, res) => {
   });
 });
 
+/**
+ * Create a single issue (e.g. Test Report task).
+ * Body: { summary, issueTypeName, projectKey, description? }
+ */
+app.post("/api/issue", async (req, res) => {
+  let auth;
+  try { auth = getAuth(req); }
+  catch (e) { return res.status(401).json({ error: e.message }); }
+
+  const { summary, issueTypeName = "Task", projectKey = "QAT", description } = req.body || {};
+  if (!summary) return res.status(400).json({ error: "summary is required" });
+
+  try {
+    const fields = {
+      project:   { key: projectKey },
+      issuetype: { name: issueTypeName },
+      summary,
+      ...(description ? {
+        description: {
+          type: "doc", version: 1,
+          content: [{ type: "paragraph", content: [{ type: "text", text: description }] }],
+        },
+      } : {}),
+    };
+    const issue = await jira("/issue", "POST", { fields }, auth);
+    console.log(`[+] Issue ${issue.key} created`);
+    res.json({ key: issue.key, url: `https://${JIRA_DOMAIN}/browse/${issue.key}` });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+/**
+ * Post a comment to an existing issue.
+ * Body: { issueKey, body }
+ */
+app.post("/api/comment", async (req, res) => {
+  let auth;
+  try { auth = getAuth(req); }
+  catch (e) { return res.status(401).json({ error: e.message }); }
+
+  const { issueKey, body } = req.body || {};
+  if (!issueKey || !body) return res.status(400).json({ error: "issueKey and body are required" });
+
+  try {
+    await jira(`/issue/${issueKey}/comment`, "POST", {
+      body: {
+        type: "doc", version: 1,
+        content: [{ type: "paragraph", content: [{ type: "text", text: body }] }],
+      },
+    }, auth);
+    console.log(`[comment] → ${issueKey}`);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+/**
+ * Body: { inwardKey, outwardKey, linkType }
+ */
+app.post("/api/link", async (req, res) => {
+  let auth;
+  try { auth = getAuth(req); }
+  catch (e) { return res.status(401).json({ error: e.message }); }
+
+  const { inwardKey, outwardKey, linkType = "Relates" } = req.body || {};
+  if (!inwardKey || !outwardKey) return res.status(400).json({ error: "inwardKey and outwardKey are required" });
+
+  try {
+    await jira("/issueLink", "POST", {
+      type:         { name: linkType },
+      inwardIssue:  { key: inwardKey },
+      outwardIssue: { key: outwardKey },
+    }, auth);
+    console.log(`[link] ${inwardKey} "${linkType}" ${outwardKey}`);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
 // ── Error handler ──────────────────────────────────────────────────────────────
 app.use((err, _req, res, _next) => {
   console.error("Unhandled:", err.message);
@@ -169,5 +268,5 @@ app.use((err, _req, res, _next) => {
 
 // ── Start ──────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`IoT Proxy running on port ${PORT} — per-user credentials mode`);
+  console.log(`Xray Proxy running on port ${PORT} — per-user credentials mode`);
 });
