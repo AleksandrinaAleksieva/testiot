@@ -1,5 +1,5 @@
 /**
- * Xray Studio — Backend Proxy Server
+ * IoT Studio — Backend Proxy Server
  *
  * Credentials come from the frontend per-request via headers:
  *   x-jira-email: user@company.com
@@ -22,7 +22,16 @@ const {
 
 const JIRA_BASE = `https://api.atlassian.com/ex/jira/${JIRA_CLOUD_ID}/rest/api/3`;
 
-// ── Express + CORS ─────────────────────────────────────────────────────────────
+// Transition IDs from "Open" status (confirmed via Jira API for QAT project)
+const STATUS_TRANSITIONS = {
+  passed:         "2",
+  failed:         "3",
+  skipped:        "4",
+  not_applicable: "5",
+  passed_remarks: "23",
+  fixed:          "24",
+};
+
 const app = express();
 app.use(express.json());
 
@@ -38,7 +47,6 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
-// ── Read credentials from request headers ──────────────────────────────────────
 function getAuth(req) {
   const email = req.headers["x-jira-email"];
   const token = req.headers["x-jira-token"];
@@ -46,7 +54,6 @@ function getAuth(req) {
   return "Basic " + Buffer.from(`${email}:${token}`).toString("base64");
 }
 
-// ── Atlassian helper ───────────────────────────────────────────────────────────
 async function jira(path, method = "GET", body = null, auth) {
   const res = await fetch(`${JIRA_BASE}${path}`, {
     method,
@@ -74,13 +81,13 @@ async function jira(path, method = "GET", body = null, auth) {
   return data;
 }
 
-// ── Routes ─────────────────────────────────────────────────────────────────────
+// ── Routes ──────────────────────────────────────────────────────────────────────
 
 app.get("/health", (_req, res) => {
   res.json({ ok: true, domain: JIRA_DOMAIN, cloudId: JIRA_CLOUD_ID });
 });
 
-/** Verify credentials — called by the portal login form */
+/** Verify credentials */
 app.get("/api/me", async (req, res) => {
   try {
     const auth = getAuth(req);
@@ -92,78 +99,152 @@ app.get("/api/me", async (req, res) => {
 });
 
 /**
- * Create a full Test Execution + all Test subtasks.
- * Body: { name, description?, fixVersion?, projectKey, tests: [{key, summary}] }
+ * Get description of a single issue (used for the expand description feature).
+ */
+app.get("/api/issue/:key", async (req, res) => {
+  let auth;
+  try { auth = getAuth(req); }
+  catch (e) { return res.status(401).json({ error: e.message }); }
+
+  try {
+    const issue = await jira(`/issue/${req.params.key}?fields=summary,description`, "GET", null, auth);
+    // description is renderedFields text or ADF — extract plain text
+    const raw = issue.fields?.description;
+    let description = "No description available.";
+    if (raw) {
+      if (typeof raw === "string") {
+        description = raw;
+      } else if (raw.content) {
+        // ADF → extract text nodes recursively
+        description = extractAdfText(raw);
+      }
+    }
+    res.json({ key: issue.key, summary: issue.fields?.summary, description });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+/** Recursively extract plain text from Atlassian Document Format (ADF) */
+function extractAdfText(node) {
+  if (!node) return "";
+  if (node.type === "text") return node.text || "";
+  if (node.type === "hardBreak") return "\n";
+  if (node.type === "rule") return "\n---\n";
+  const children = node.content || [];
+  const childText = children.map(extractAdfText).join("");
+  if (["paragraph","heading","listItem"].includes(node.type)) return childText + "\n";
+  if (["bulletList","orderedList"].includes(node.type)) return childText;
+  return childText;
+}
+
+/**
+ * Create a full Test Execution + Test subtasks.
+ * Also handles "edit existing execution" via parentKey field.
+ * Body: {
+ *   name, description?, fixVersion?, projectKey,
+ *   parentKey?,   ← if set, adds tests to this existing execution
+ *   tests: [{ key, summary, status, reason, addToTemplate?, templateKey? }]
+ * }
  */
 app.post("/api/execution", async (req, res) => {
   let auth;
   try { auth = getAuth(req); }
   catch (e) { return res.status(401).json({ error: e.message }); }
 
-  const { name, description, fixVersion, projectKey = "QAT", tests = [] } = req.body || {};
+  const {
+    name, description, fixVersion,
+    projectKey = "QAT",
+    parentKey,          // if present → edit mode (add to existing)
+    tests = []
+  } = req.body || {};
 
-  if (!name)         return res.status(400).json({ error: "name is required" });
-  if (!tests.length) return res.status(400).json({ error: "tests array must not be empty" });
+  if (!parentKey && !name) return res.status(400).json({ error: "name is required for new executions" });
+  if (!tests.length)       return res.status(400).json({ error: "tests array must not be empty" });
 
-  // 1. Create Test Execution parent
-  let execKey;
-  try {
-    const execFields = {
-      project:   { key: projectKey },
-      issuetype: { name: "Test Execution" },
-      summary: name,
-      ...(description ? {
-        description: {
-          type: "doc", version: 1,
-          content: [{ type: "paragraph", content: [{ type: "text", text: description }] }],
-        },
-      } : {}),
-      ...(fixVersion ? { fixVersions: [{ name: fixVersion }] } : {}),
-    };
-    const exec = await jira("/issue", "POST", { fields: execFields }, auth);
-    execKey = exec.key;
-    console.log(`[+] ${execKey} created by ${req.headers["x-jira-email"]}`);
-  } catch (e) {
-    return res.status(e.status || 500).json({ error: `Failed to create execution: ${e.message}` });
+  let execKey = parentKey || null;
+
+  // 1. Create Test Execution parent (only in create mode)
+  if (!parentKey) {
+    try {
+      const execFields = {
+        project:   { key: projectKey },
+        issuetype: { name: "Test Execution" },
+        summary: name,
+        // Only set description if user explicitly provided one (not the report)
+        ...(description ? {
+          description: {
+            type: "doc", version: 1,
+            content: [{ type: "paragraph", content: [{ type: "text", text: description }] }],
+          },
+        } : {}),
+        ...(fixVersion ? { fixVersions: [{ name: fixVersion }] } : {}),
+      };
+      const exec = await jira("/issue", "POST", { fields: execFields }, auth);
+      execKey = exec.key;
+      console.log(`[+] ${execKey} created by ${req.headers["x-jira-email"]}`);
+    } catch (e) {
+      return res.status(e.status || 500).json({ error: `Failed to create execution: ${e.message}` });
+    }
+  } else {
+    console.log(`[edit] Adding tests to existing ${execKey} by ${req.headers["x-jira-email"]}`);
   }
 
-  // 2. Create Test subtasks sequentially
+  // 2. Create Test subtasks + transition status + optionally add to template
   const created = [];
   const failed  = [];
 
   for (const t of tests) {
     try {
-      // Build description from status label
-      const statusLabel = {
-        passed:          "✅ PASSED",
-        passed_remarks:  "✅ PASSED with remarks",
-        failed:          "❌ FAILED",
-        fixed:           "🔧 FIXED",
-        skipped:         "⏭ SKIPPED",
-        not_applicable:  "N/A",
-      }[t.status] || "N/A";
-
+      // Create the test subtask
       const testFields = {
         project:   { key: projectKey },
         issuetype: { name: "Test" },
         summary:   t.summary,
         parent:    { key: execKey },
-        description: {
-          type: "doc", version: 1,
-          content: [{ type: "paragraph", content: [{ type: "text", text: statusLabel }] }],
-        },
         // Reason field (customfield_12246)
         ...(t.reason ? { customfield_12246: t.reason } : {}),
       };
 
       const issue = await jira("/issue", "POST", { fields: testFields }, auth);
-      created.push({ original: t.key, created: issue.key });
-      console.log(`  ✓ ${issue.key} <- ${t.key}`);
+      const newKey = issue.key;
+      created.push({ original: t.key, created: newKey });
+      console.log(`  ✓ ${newKey} <- ${t.key}`);
+
+      // 2b. Transition the new issue to the selected status (if not "open")
+      const transitionId = STATUS_TRANSITIONS[t.status];
+      if (transitionId) {
+        try {
+          await jira(`/issue/${newKey}/transitions`, "POST", {
+            transition: { id: transitionId },
+          }, auth);
+          console.log(`    → transitioned ${newKey} to ${t.status}`);
+        } catch (te) {
+          console.warn(`    ⚠ transition ${newKey} failed: ${te.message}`);
+        }
+      }
+
+      // 2c. If addToTemplate, also create the test under the template epic
+      if (t.addToTemplate && t.templateKey) {
+        try {
+          const tplFields = {
+            project:   { key: projectKey },
+            issuetype: { name: "Test" },
+            summary:   t.summary,
+            parent:    { key: t.templateKey },
+          };
+          const tplIssue = await jira("/issue", "POST", { fields: tplFields }, auth);
+          console.log(`    + Added ${tplIssue.key} to template ${t.templateKey}`);
+        } catch (te) {
+          console.warn(`    ⚠ template add failed: ${te.message}`);
+        }
+      }
+
     } catch (e) {
       failed.push({ original: t.key, error: e.message });
       console.warn(`  x ${t.key}: ${e.message}`);
     }
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 120));
   }
 
   console.log(`[done] ${execKey}: ${created.length}/${tests.length}`);
@@ -175,38 +256,6 @@ app.post("/api/execution", async (req, res) => {
     failed,
     total: tests.length,
   });
-});
-
-/**
- * Create a single issue (e.g. Test Report task).
- * Body: { summary, issueTypeName, projectKey, description? }
- */
-app.post("/api/issue", async (req, res) => {
-  let auth;
-  try { auth = getAuth(req); }
-  catch (e) { return res.status(401).json({ error: e.message }); }
-
-  const { summary, issueTypeName = "Task", projectKey = "QAT", description } = req.body || {};
-  if (!summary) return res.status(400).json({ error: "summary is required" });
-
-  try {
-    const fields = {
-      project:   { key: projectKey },
-      issuetype: { name: issueTypeName },
-      summary,
-      ...(description ? {
-        description: {
-          type: "doc", version: 1,
-          content: [{ type: "paragraph", content: [{ type: "text", text: description }] }],
-        },
-      } : {}),
-    };
-    const issue = await jira("/issue", "POST", { fields }, auth);
-    console.log(`[+] Issue ${issue.key} created`);
-    res.json({ key: issue.key, url: `https://${JIRA_DOMAIN}/browse/${issue.key}` });
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
 });
 
 /**
@@ -236,6 +285,7 @@ app.post("/api/comment", async (req, res) => {
 });
 
 /**
+ * Link two issues via a Jira link type.
  * Body: { inwardKey, outwardKey, linkType }
  */
 app.post("/api/link", async (req, res) => {
@@ -259,13 +309,24 @@ app.post("/api/link", async (req, res) => {
   }
 });
 
-// ── Error handler ──────────────────────────────────────────────────────────────
+/** Get fix versions for a project */
+app.get("/api/versions", async (req, res) => {
+  let auth;
+  try { auth = getAuth(req); }
+  catch (e) { return res.status(401).json({ error: e.message }); }
+  try {
+    const data = await jira(`/project/${req.query.projectKey || "QAT"}/versions`, "GET", null, auth);
+    res.json(data);
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
 app.use((err, _req, res, _next) => {
   console.error("Unhandled:", err.message);
   res.status(500).json({ error: err.message });
 });
 
-// ── Start ──────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`Xray Proxy running on port ${PORT} — per-user credentials mode`);
+  console.log(`IoT Studio Proxy running on port ${PORT}`);
 });
