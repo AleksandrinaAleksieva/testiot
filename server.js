@@ -131,6 +131,35 @@ app.get("/api/issue/:key", async (req, res) => {
   }
 });
 
+/**
+ * Load subtasks of a template epic — used when changing template key in Settings.
+ */
+app.get("/api/issue/:key/subtasks", async (req, res) => {
+  let auth;
+  try { auth = getAuth(req); }
+  catch (e) { return res.status(401).json({ error: e.message }); }
+
+  try {
+    const issue = await jira(
+      `/issue/${req.params.key}?fields=summary,subtasks`,
+      "GET", null, auth
+    );
+    const subtasks = issue.fields?.subtasks || [];
+    // Fetch each subtask summary
+    const tests = await Promise.all(subtasks.map(async (s) => {
+      try {
+        const sub = await jira(`/issue/${s.key}?fields=summary`, "GET", null, auth);
+        return { key: s.key, summary: sub.fields?.summary || s.fields?.summary || s.key, feature: "General" };
+      } catch {
+        return { key: s.key, summary: s.fields?.summary || s.key, feature: "General" };
+      }
+    }));
+    res.json({ key: issue.key, summary: issue.fields?.summary, tests });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
 /** Recursively extract plain text from Atlassian Document Format (ADF) */
 function extractAdfText(node) {
   if (!node) return "";
