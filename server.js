@@ -133,7 +133,7 @@ app.post("/api/execution", async (req, res) => {
 
   for (const t of tests) {
     try {
-      // Build description from status + comment if provided
+      // Build description from status label
       const statusLabel = {
         passed:          "✅ PASSED",
         passed_remarks:  "✅ PASSED with remarks",
@@ -142,22 +142,21 @@ app.post("/api/execution", async (req, res) => {
         skipped:         "⏭ SKIPPED",
         not_applicable:  "N/A",
       }[t.status] || "N/A";
-      const descText = t.comment
-        ? `${statusLabel}\n\n${t.comment}`
-        : statusLabel;
 
-      const issue = await jira("/issue", "POST", {
-        fields: {
-          project:   { key: projectKey },
-          issuetype: { name: "Test" },
-          summary:   t.summary,
-          parent:    { key: execKey },
-          description: {
-            type: "doc", version: 1,
-            content: [{ type: "paragraph", content: [{ type: "text", text: descText }] }],
-          },
+      const testFields = {
+        project:   { key: projectKey },
+        issuetype: { name: "Test" },
+        summary:   t.summary,
+        parent:    { key: execKey },
+        description: {
+          type: "doc", version: 1,
+          content: [{ type: "paragraph", content: [{ type: "text", text: statusLabel }] }],
         },
-      }, auth);
+        // Reason field (customfield_12246)
+        ...(t.reason ? { customfield_12246: t.reason } : {}),
+      };
+
+      const issue = await jira("/issue", "POST", { fields: testFields }, auth);
       created.push({ original: t.key, created: issue.key });
       console.log(`  ✓ ${issue.key} <- ${t.key}`);
     } catch (e) {
