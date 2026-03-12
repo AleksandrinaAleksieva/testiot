@@ -3,7 +3,7 @@
  *
  * Credentials come from the frontend per-request via headers:
  *   x-jira-email: user@company.com
- *   x-jira-token: ATATT3x...
+ *   x-jira-token: ATATT3x..
  *
  * Nothing is stored server-side. The server is just a CORS bridge.
  */
