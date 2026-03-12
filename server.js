@@ -139,6 +139,138 @@ function extractAdfText(node) {
 }
 
 /**
+ * Load a Test Execution with all its subtasks (status + reason).
+ * Used by the "Edit Execution" flow to pre-populate the UI.
+ */
+app.get("/api/execution/:key", async (req, res) => {
+  let auth;
+  try { auth = getAuth(req); }
+  catch (e) { return res.status(401).json({ error: e.message }); }
+
+  try {
+    // 1. Fetch the execution itself
+    const exec = await jira(
+      `/issue/${req.params.key}?fields=summary,description,fixVersions,status,issuetype,subtasks`,
+      "GET", null, auth
+    );
+
+    if (exec.fields.issuetype?.name !== "Test Execution") {
+      return res.status(400).json({ error: `${req.params.key} is not a Test Execution (it's a ${exec.fields.issuetype?.name})` });
+    }
+
+    // 2. Fetch each subtask in parallel (status + reason)
+    const subtaskKeys = (exec.fields.subtasks || []).map(s => s.key);
+    const subtaskDetails = await Promise.all(
+      subtaskKeys.map(k =>
+        jira(`/issue/${k}?fields=summary,status,customfield_12246`, "GET", null, auth)
+          .then(d => ({
+            key: d.key,
+            summary: d.fields.summary,
+            statusName: d.fields.status?.name || "Open",
+            statusId: d.fields.status?.id || "1",
+            reason: d.fields.customfield_12246 || "",
+          }))
+          .catch(() => null)
+      )
+    );
+
+    // Map Jira status names → app status values
+    const STATUS_NAME_MAP = {
+      "🟢 Passed":            "passed",
+      "🔴 Failed":            "failed",
+      "🟡 Skipped":           "skipped",
+      "⚪ Not applicable":    "not_applicable",
+      "🟠Passed with remarks":"passed_remarks",
+      "🔵Fixed":              "fixed",
+      "Open":                 "not_applicable",
+    };
+
+    const tests = subtaskDetails
+      .filter(Boolean)
+      .map(t => ({
+        key: t.key,
+        summary: t.summary,
+        status: STATUS_NAME_MAP[t.statusName] || "not_applicable",
+        reason: t.reason,
+      }));
+
+    res.json({
+      key: exec.key,
+      summary: exec.fields.summary,
+      fixVersion: exec.fields.fixVersions?.[0]?.name || "",
+      tests,
+    });
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message });
+  }
+});
+
+/**
+ * Update existing Test Execution subtasks — transition status + update reason.
+ * Body: { tests: [{ key, status, reason }] }  (these are the EXISTING subtask keys)
+ * Also updates the execution summary if provided.
+ */
+app.post("/api/execution/:key/update", async (req, res) => {
+  let auth;
+  try { auth = getAuth(req); }
+  catch (e) { return res.status(401).json({ error: e.message }); }
+
+  const execKey = req.params.key;
+  const { name, tests = [] } = req.body || {};
+
+  const updated = [];
+  const failed  = [];
+
+  // Optionally rename the execution
+  if (name) {
+    try {
+      await jira(`/issue/${execKey}`, "PUT", { fields: { summary: name } }, auth);
+      console.log(`[edit] Renamed ${execKey} → "${name}"`);
+    } catch (e) {
+      console.warn(`[edit] Rename failed: ${e.message}`);
+    }
+  }
+
+  for (const t of tests) {
+    try {
+      // 1. Transition status
+      const transitionId = STATUS_TRANSITIONS[t.status];
+      if (transitionId) {
+        // Need to get current transitions for this issue (status-dependent)
+        const transData = await jira(`/issue/${t.key}/transitions`, "GET", null, auth);
+        const available = transData.transitions || [];
+        const match = available.find(tr => tr.id === transitionId);
+        if (match) {
+          await jira(`/issue/${t.key}/transitions`, "POST", { transition: { id: transitionId } }, auth);
+        } else {
+          // Try by name if ID not found
+          const byName = available.find(tr =>
+            tr.name.toLowerCase().includes(t.status.replace("_", " "))
+          );
+          if (byName) {
+            await jira(`/issue/${t.key}/transitions`, "POST", { transition: { id: byName.id } }, auth);
+          }
+        }
+      }
+
+      // 2. Update reason field
+      await jira(`/issue/${t.key}`, "PUT", {
+        fields: { customfield_12246: t.reason || null },
+      }, auth);
+
+      updated.push(t.key);
+      console.log(`  ✓ updated ${t.key} → ${t.status}`);
+    } catch (e) {
+      failed.push({ key: t.key, error: e.message });
+      console.warn(`  x ${t.key}: ${e.message}`);
+    }
+    await new Promise(r => setTimeout(r, 80));
+  }
+
+  res.json({ execKey, updated, failed });
+});
+
+/**
  * Create a full Test Execution + Test subtasks.
  * Also handles "edit existing execution" via parentKey field.
  * Body: {
