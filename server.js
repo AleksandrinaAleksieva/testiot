@@ -42,7 +42,7 @@ const corsOptions = {
     cb(new Error(`CORS: origin '${origin}' not allowed`));
   },
   methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "x-jira-email", "x-jira-token"],
+  allowedHeaders: ["Content-Type", "x-jira-email", "x-jira-token", "ngrok-skip-browser-warning"],
 };
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
