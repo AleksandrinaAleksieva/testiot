@@ -12,9 +12,6 @@ require("dotenv").config();
 const express  = require("express");
 const cors     = require("cors");
 const fetch    = require("node-fetch");
-const multer   = require("multer");
-const FormData = require("form-data");
-const upload   = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } });
 
 const {
   JIRA_CLOUD_ID   = "a45ac4b7-7db8-40a7-a5c6-1713fcbd8751",
@@ -487,47 +484,6 @@ app.get("/api/versions", async (req, res) => {
   try {
     const data = await jira(`/project/${req.query.projectKey || "QAT"}/versions`, "GET", null, auth);
     res.json(data);
-  } catch (e) {
-    res.status(e.status || 500).json({ error: e.message });
-  }
-});
-
-/**
- * POST /api/attachment
- * Upload a file as an attachment to a Jira issue.
- * Expects multipart/form-data with fields: issueKey, file
- */
-app.post("/api/attachment", upload.single("file"), async (req, res) => {
-  let auth;
-  try { auth = getAuth(req); }
-  catch (e) { return res.status(401).json({ error: e.message }); }
-
-  const { issueKey } = req.body || {};
-  if (!issueKey) return res.status(400).json({ error: "issueKey is required" });
-  if (!req.file)  return res.status(400).json({ error: "file is required" });
-
-  try {
-    const form = new FormData();
-    form.append("file", req.file.buffer, {
-      filename:    req.file.originalname,
-      contentType: req.file.mimetype,
-    });
-
-    const url = `${JIRA_BASE}/issue/${issueKey}/attachments`;
-    const r = await fetch(url, {
-      method:  "POST",
-      headers: {
-        "Authorization":       `Basic ${Buffer.from(`${auth.email}:${auth.token}`).toString("base64")}`,
-        "X-Atlassian-Token":   "no-check",
-        ...form.getHeaders(),
-      },
-      body: form,
-    });
-
-    const data = await r.json();
-    if (!r.ok) throw Object.assign(new Error(data?.errors ? JSON.stringify(data.errors) : `HTTP ${r.status}`), { status: r.status });
-    console.log(`[attach] ${req.file.originalname} → ${issueKey}`);
-    res.json({ ok: true, attachments: data });
   } catch (e) {
     res.status(e.status || 500).json({ error: e.message });
   }
